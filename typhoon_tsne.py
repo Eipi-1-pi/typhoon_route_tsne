@@ -1,6 +1,5 @@
 import dash
 import plotly.graph_objects as go
-import plotly.express as px
 import pickle
 import tropycal.tracks as tracks
 import pandas as pd
@@ -277,60 +276,6 @@ def filter_west_pacific_coordinates(lons, lats):
     mask = (100 <= lons) & (lons <= 180) & (0 <= lats) & (lats <= 40)
     return lons[mask], lats[mask]
 
-def generate_cluster_equations(cluster_indices, standardized_routes):
-
-    # Collect all routes for the current cluster
-    cluster_route_vectors = standardized_routes[cluster_indices]
-    
-    # Reshape and combine all the routes
-    all_lons = []
-    all_lats = []
-    for route_vector in cluster_route_vectors:
-        route_points = route_vector.reshape(-1, 2)
-        lons = route_points[:, 0]
-        lats = route_points[:, 1]
-        all_lons.extend(lons)
-        all_lats.extend(lats)
-    
-    X = np.array(all_lons)
-    y = np.array(all_lats)
-    
-    # Ensure there are enough data points
-    if len(X) < 9:
-        print(f"Not enough data points to fit Fourier series for cluster (need at least 9, have {len(X)})")
-        equations = []
-        x_min, x_max = X.min(), X.max()
-        return equations, (x_min, x_max)
-    
-    x_min = X.min()
-    x_max = X.max()
-    
-    # Normalize X to [0, 2π]
-    if x_max == x_min:
-        X_normalized = np.zeros_like(X)
-    else:
-        X_normalized = 2 * np.pi * (X - x_min) / (x_max - x_min)
-    
-    # Define Fourier series up to the 4th order
-    def fourier_series(x, a0, a1, b1, a2, b2, a3, b3, a4, b4):
-        return (a0 +
-                a1 * np.cos(x) + b1 * np.sin(x) +
-                a2 * np.cos(2 * x) + b2 * np.sin(2 * x) +
-                a3 * np.cos(3 * x) + b3 * np.sin(3 * x) +
-                a4 * np.cos(4 * x) + b4 * np.sin(4 * x))
-    
-    try:
-        params, _ = curve_fit(fourier_series, X_normalized, y)
-        a0, a1, b1, a2, b2, a3, b3, a4, b4 = params
-        # Construct the equation as a string for display
-        equation_str = f"y = {a0:.3f} + {a1:.3f}*cos(x) + {b1:.3f}*sin(x) + {a2:.3f}*cos(2x) + {b2:.3f}*sin(2x) + {a3:.3f}*cos(3x) + {b3:.3f}*sin(3x) + {a4:.3f}*cos(4x) + {b4:.3f}*sin(4x)"
-        equations = [("Fourier Series Fit", equation_str)]
-    except Exception as e:
-        print(f"Error fitting Fourier series for cluster: {e}")
-        equations = []
-        
-    return equations, (x_min, x_max)
-
 app = dash.Dash(__name__)
 
 # Classification standards
@@ -370,19 +315,19 @@ app.layout = html.Div([
             value='all'
         ),
         html.Button('Analyze', id='analyze-button', n_clicks=0),
-    ]),
+    ], style={'display': 'flex', 'gap': '10px', 'flex-wrap': 'wrap'}),
     
     html.Div([
         html.P("Number of Clusters"),
         dcc.Input(id='n-clusters', type='number', placeholder='Number of Clusters', value=5, min=1, max=20, step=1),
         html.Button('Show Clusters', id='show-clusters-button', n_clicks=0),
         html.Button('Show Typhoon Routes', id='show-routes-button', n_clicks=0),
-    ]),
-
+    ], style={'display': 'flex', 'gap': '10px', 'alignItems': 'center'}),
+    
     dcc.Graph(id='typhoon-routes-graph'),
     
-    html.Div(id='cluster-equation-results'),
-
+    # Removed 'cluster-equation-results' as Fourier series part is deleted
+    
     html.H2("Typhoon Path Analysis"),
     html.Div([
         dcc.Dropdown(
@@ -404,9 +349,10 @@ app.layout = html.Div([
             value='atlantic',
             style={'width': '200px'}
         )
-    ], style={'display': 'flex', 'gap': '10px'}),
+    ], style={'display': 'flex', 'gap': '10px', 'flex-wrap': 'wrap'}),
     
     dcc.Graph(id='typhoon-path-animation'),
+    
     html.Div([
         html.H3("Typhoon Generation Analysis"),
         html.Div(id='typhoon-count-analysis'),
@@ -516,7 +462,7 @@ def create_typhoon_path_figure(storm, selected_year, standard='atlantic'):
                 lon=storm.lon[:i+1],
                 lat=storm.lat[:i+1],
                 mode='lines',
-                line=dict(width=2, color='blue'),
+                line=dict(width=2, color=color),
                 name='Path Traveled',
                 showlegend=False,
             ),
@@ -610,8 +556,7 @@ def create_typhoon_path_figure(storm, selected_year, standard='atlantic'):
     return fig
 
 @app.callback(
-    [Output('typhoon-routes-graph', 'figure'),
-     Output('cluster-equation-results', 'children')],
+    Output('typhoon-routes-graph', 'figure'),
     [Input('analyze-button', 'n_clicks'),
      Input('show-clusters-button', 'n_clicks'),
      Input('show-routes-button', 'n_clicks')],
@@ -622,7 +567,6 @@ def create_typhoon_path_figure(storm, selected_year, standard='atlantic'):
      State('n-clusters', 'value'),
      State('enso-dropdown', 'value')]
 )
-
 def update_route_clusters(analyze_clicks, show_clusters_clicks, show_routes_clicks,
                           start_year, start_month, end_year, end_month,
                           n_clusters, enso_value):
@@ -635,7 +579,6 @@ def update_route_clusters(analyze_clicks, show_clusters_clicks, show_routes_clic
     fig_routes = go.Figure()
 
     clusters = np.array([])
-    cluster_equations = []
     
     # Clustering analysis
     west_pacific_storms = []
@@ -648,6 +591,9 @@ def update_route_clusters(analyze_clicks, show_clusters_clicks, show_routes_clic
             lons, lats = filter_west_pacific_coordinates(np.array(storm.lon), np.array(storm.lat))
             if len(lons) > 1:
                 west_pacific_storms.append((lons, lats))
+
+    if not west_pacific_storms:
+        return fig_routes, "No storms found in the selected period."
 
     max_length = max(len(storm[0]) for storm in west_pacific_storms)
     standardized_routes = []
@@ -665,6 +611,9 @@ def update_route_clusters(analyze_clicks, show_clusters_clicks, show_routes_clic
     # Convert the list to a NumPy array
     standardized_routes = np.array(standardized_routes)
 
+    if standardized_routes.size == 0:
+        return fig_routes, "No standardized routes available for clustering."
+
     # Use t-SNE for dimensionality reduction
     tsne = TSNE(n_components=2, random_state=42)
     tsne_results = tsne.fit_transform(standardized_routes)
@@ -673,36 +622,37 @@ def update_route_clusters(analyze_clicks, show_clusters_clicks, show_routes_clic
     kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
     clusters = kmeans.fit_predict(tsne_results)
 
-    # Count the number of typhoons in each cluster
-    cluster_counts = np.bincount(clusters)
+    # Assign colors to clusters
+    cluster_colors = px.colors.qualitative.Plotly
+    if n_clusters > len(cluster_colors):
+        # Extend the color list if needed
+        cluster_colors = cluster_colors * (n_clusters // len(cluster_colors) + 1)
+    cluster_color_map = {i: cluster_colors[i] for i in range(n_clusters)}
 
-    # Plot the t-SNE reduced data points
-    for i in range(n_clusters):
-        cluster_points = tsne_results[clusters == i]
-        fig_routes.add_trace(go.Scatter(
-            x=cluster_points[:, 0],
-            y=cluster_points[:, 1],
-            mode='markers',
-            name=f'Cluster {i+1} (n={cluster_counts[i]})',
-            marker=dict(size=5),
-            showlegend=True,
-            visible=(button_id == 'show-clusters-button')
-        ))
-
-    equations_output = []
-    for i in range(n_clusters):
-        cluster_indices = np.where(clusters == i)[0]
-        equations, (lon_min, lon_max) = generate_cluster_equations(cluster_indices, standardized_routes)
-        
-        equations_output.append(html.H4([
-            f"Cluster {i+1} (Typhoon Count: ",
-                html.Span(f"{cluster_counts[i]}", style={'color': 'blue'}),
-                    ")"
-        ]))
-        for name, eq in equations:
-            equations_output.append(html.P(f"{name}: {eq}"))
-        
-        # Optionally, plot the cluster center or mean route
+    if button_id == 'show-clusters-button':
+        # Plot the routes color-coded by cluster
+        for i in range(n_clusters):
+            cluster_routes = west_pacific_storms[np.where(clusters == i)[0]]
+            for lons, lats in cluster_routes:
+                fig_routes.add_trace(go.Scattergeo(
+                    lon=lons,
+                    lat=lats,
+                    mode='lines',
+                    line=dict(width=1, color=cluster_color_map[i]),
+                    name=f'Cluster {i+1}',
+                    showlegend=(i == 0),  # Show legend only once
+                ))
+    elif button_id == 'show-routes-button' or button_id == 'analyze-button':
+        # Plot all routes without clustering
+        for lons, lats in west_pacific_storms:
+            fig_routes.add_trace(go.Scattergeo(
+                lon=lons,
+                lat=lats,
+                mode='lines',
+                line=dict(width=1, color='gray'),
+                name='Typhoon Route',
+                showlegend=False,
+            ))
 
     enso_phase_text = {
         'all': 'All Years',
@@ -711,13 +661,20 @@ def update_route_clusters(analyze_clicks, show_clusters_clicks, show_routes_clic
         'neutral': 'Neutral Years'
     }
     fig_routes.update_layout(
-        title=f'West Pacific Typhoon Route Clustering ({start_year}-{end_year}) - {enso_phase_text[enso_value]}',
-        xaxis_title='Dimension 1',
-        yaxis_title='Dimension 2',
+        title=f'West Pacific Typhoon Routes ({start_year}-{end_year}) - {enso_phase_text.get(enso_value, "All Years")}',
+        geo=dict(
+            projection_type='natural earth',
+            showland=True,
+            landcolor='rgb(243, 243, 243)',
+            countrycolor='rgb(204, 204, 204)',
+            coastlinecolor='rgb(100, 100, 100)',
+            showocean=True,
+            oceancolor='rgb(230, 250, 255)',
+        ),
         legend_title='Clusters'
     )
     
-    return fig_routes, html.Div(equations_output)
+    return fig_routes, ""
 
 def categorize_typhoon_by_standard(wind_speed, standard='atlantic'):
     """
@@ -756,6 +713,9 @@ def categorize_typhoon_by_standard(wind_speed, standard='atlantic'):
 if __name__ == "__main__":
     print(f"Using data path: {DATA_PATH}")
     ibtracs = load_ibtracs_data()
+    if ibtracs is None:
+        print("IBTrACS data could not be loaded. Exiting application.")
+        exit(1)
     convert_typhoon_data(LOCAL_IBTRACS_PATH, TYPHOON_DATA_PATH)
     typhoon_data = load_data(TYPHOON_DATA_PATH)
 
@@ -763,7 +723,7 @@ if __name__ == "__main__":
     schedule.every().day.at("01:00").do(update_ibtracs_data)
     
     # Run the scheduler in a separate thread
-    scheduler_thread = threading.Thread(target=run_schedule)
+    scheduler_thread = threading.Thread(target=run_schedule, daemon=True)
     scheduler_thread.start()
     
     app.run_server(debug=True, host='127.0.0.1', port=8050)
