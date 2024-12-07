@@ -1,5 +1,6 @@
 import dash
 import plotly.graph_objects as go
+import plotly.express as px
 import pickle
 import tropycal.tracks as tracks
 import pandas as pd
@@ -315,19 +316,17 @@ app.layout = html.Div([
             value='all'
         ),
         html.Button('Analyze', id='analyze-button', n_clicks=0),
-    ], style={'display': 'flex', 'gap': '10px', 'flex-wrap': 'wrap'}),
+    ]),
     
     html.Div([
         html.P("Number of Clusters"),
         dcc.Input(id='n-clusters', type='number', placeholder='Number of Clusters', value=5, min=1, max=20, step=1),
         html.Button('Show Clusters', id='show-clusters-button', n_clicks=0),
         html.Button('Show Typhoon Routes', id='show-routes-button', n_clicks=0),
-    ], style={'display': 'flex', 'gap': '10px', 'alignItems': 'center'}),
-    
+    ]),
+
     dcc.Graph(id='typhoon-routes-graph'),
-    
-    # Removed 'cluster-equation-results' as Fourier series part is deleted
-    
+
     html.H2("Typhoon Path Analysis"),
     html.Div([
         dcc.Dropdown(
@@ -349,10 +348,9 @@ app.layout = html.Div([
             value='atlantic',
             style={'width': '200px'}
         )
-    ], style={'display': 'flex', 'gap': '10px', 'flex-wrap': 'wrap'}),
+    ], style={'display': 'flex', 'gap': '10px'}),
     
     dcc.Graph(id='typhoon-path-animation'),
-    
     html.Div([
         html.H3("Typhoon Generation Analysis"),
         html.Div(id='typhoon-count-analysis'),
@@ -385,7 +383,6 @@ def initialize_year_dropdown(_):
         years = sorted(years)
         
         options = [{'label': str(int(year)), 'value': int(year)} for year in years]
-        print(f"Generated options: {options[:5]}...")
         return options
     except Exception as e:
         print(f"Error in initialize_year_dropdown: {str(e)}")
@@ -462,7 +459,7 @@ def create_typhoon_path_figure(storm, selected_year, standard='atlantic'):
                 lon=storm.lon[:i+1],
                 lat=storm.lat[:i+1],
                 mode='lines',
-                line=dict(width=2, color=color),
+                line=dict(width=2, color='blue'),
                 name='Path Traveled',
                 showlegend=False,
             ),
@@ -576,24 +573,23 @@ def update_route_clusters(analyze_clicks, show_clusters_clicks, show_routes_clic
     start_date = datetime(start_year, start_month, 1)
     end_date = datetime(end_year, end_month, 28)
     
-    fig_routes = go.Figure()
-
-    clusters = np.array([])
-    
-    # Clustering analysis
+    # Collect west pacific storms
     west_pacific_storms = []
     for year in range(start_year, end_year + 1):
         season = ibtracs.get_season(year)
         for storm_id in season.summary()['id']:
             storm = get_storm_data(storm_id)
-            storm_date = storm.time[0]
-            
-            lons, lats = filter_west_pacific_coordinates(np.array(storm.lon), np.array(storm.lat))
-            if len(lons) > 1:
-                west_pacific_storms.append((lons, lats))
+            # Filter times within start and end date if needed
+            # For now, we'll take the entire storm route if it has points in that range
+            if len(storm.lon) > 1:
+                lons = np.array(storm.lon)
+                lats = np.array(storm.lat)
+                lons, lats = filter_west_pacific_coordinates(lons, lats)
+                if len(lons) > 1:
+                    west_pacific_storms.append((lons, lats))
 
     if not west_pacific_storms:
-        return fig_routes, "No storms found in the selected period."
+        return go.Figure(), html.Div("No data available.")
 
     max_length = max(len(storm[0]) for storm in west_pacific_storms)
     standardized_routes = []
@@ -608,13 +604,9 @@ def update_route_clusters(analyze_clicks, show_clusters_clicks, show_routes_clic
         route_vector = np.column_stack((lon_interp, lat_interp)).flatten()
         standardized_routes.append(route_vector)
 
-    # Convert the list to a NumPy array
     standardized_routes = np.array(standardized_routes)
 
-    if standardized_routes.size == 0:
-        return fig_routes, "No standardized routes available for clustering."
-
-    # Use t-SNE for dimensionality reduction
+    # Use t-SNE for dimensionality reduction (for clustering, not visualization)
     tsne = TSNE(n_components=2, random_state=42)
     tsne_results = tsne.fit_transform(standardized_routes)
 
@@ -622,37 +614,27 @@ def update_route_clusters(analyze_clicks, show_clusters_clicks, show_routes_clic
     kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
     clusters = kmeans.fit_predict(tsne_results)
 
-    # Assign colors to clusters
-    cluster_colors = px.colors.qualitative.Plotly
-    if n_clusters > len(cluster_colors):
-        # Extend the color list if needed
-        cluster_colors = cluster_colors * (n_clusters // len(cluster_colors) + 1)
-    cluster_color_map = {i: cluster_colors[i] for i in range(n_clusters)}
+    # Plot actual routes on a world map, color-coded by cluster
+    fig_routes = go.Figure()
 
-    if button_id == 'show-clusters-button':
-        # Plot the routes color-coded by cluster
-        for i in range(n_clusters):
-            cluster_routes = west_pacific_storms[np.where(clusters == i)[0]]
-            for lons, lats in cluster_routes:
-                fig_routes.add_trace(go.Scattergeo(
-                    lon=lons,
-                    lat=lats,
-                    mode='lines',
-                    line=dict(width=1, color=cluster_color_map[i]),
-                    name=f'Cluster {i+1}',
-                    showlegend=(i == 0),  # Show legend only once
-                ))
-    elif button_id == 'show-routes-button' or button_id == 'analyze-button':
-        # Plot all routes without clustering
-        for lons, lats in west_pacific_storms:
-            fig_routes.add_trace(go.Scattergeo(
+    # Assign a color to each cluster
+    cluster_colors = px.colors.qualitative.Safe
+    if len(cluster_colors) < n_clusters:
+        cluster_colors = px.colors.qualitative.Dark24
+
+    # Add each route as a separate trace, colored by its cluster
+    for i, (lons, lats) in enumerate(west_pacific_storms):
+        cluster_id = clusters[i]
+        fig_routes.add_trace(
+            go.Scattergeo(
                 lon=lons,
                 lat=lats,
                 mode='lines',
-                line=dict(width=1, color='gray'),
-                name='Typhoon Route',
-                showlegend=False,
-            ))
+                line=dict(width=2, color=cluster_colors[cluster_id % len(cluster_colors)]),
+                name=f'Cluster {cluster_id+1}',
+                showlegend=False
+            )
+        )
 
     enso_phase_text = {
         'all': 'All Years',
@@ -660,8 +642,10 @@ def update_route_clusters(analyze_clicks, show_clusters_clicks, show_routes_clic
         'la_nina': 'La Niña',
         'neutral': 'Neutral Years'
     }
+
     fig_routes.update_layout(
-        title=f'West Pacific Typhoon Routes ({start_year}-{end_year}) - {enso_phase_text.get(enso_value, "All Years")}',
+        title=f'West Pacific Typhoon Routes ({start_year}-{end_year}) - {enso_phase_text[enso_value]}',
+        showlegend=False,
         geo=dict(
             projection_type='natural earth',
             showland=True,
@@ -670,11 +654,10 @@ def update_route_clusters(analyze_clicks, show_clusters_clicks, show_routes_clic
             coastlinecolor='rgb(100, 100, 100)',
             showocean=True,
             oceancolor='rgb(230, 250, 255)',
-        ),
-        legend_title='Clusters'
+        )
     )
     
-    return fig_routes, ""
+    return fig_routes, None
 
 def categorize_typhoon_by_standard(wind_speed, standard='atlantic'):
     """
@@ -713,9 +696,6 @@ def categorize_typhoon_by_standard(wind_speed, standard='atlantic'):
 if __name__ == "__main__":
     print(f"Using data path: {DATA_PATH}")
     ibtracs = load_ibtracs_data()
-    if ibtracs is None:
-        print("IBTrACS data could not be loaded. Exiting application.")
-        exit(1)
     convert_typhoon_data(LOCAL_IBTRACS_PATH, TYPHOON_DATA_PATH)
     typhoon_data = load_data(TYPHOON_DATA_PATH)
 
@@ -723,7 +703,7 @@ if __name__ == "__main__":
     schedule.every().day.at("01:00").do(update_ibtracs_data)
     
     # Run the scheduler in a separate thread
-    scheduler_thread = threading.Thread(target=run_schedule, daemon=True)
+    scheduler_thread = threading.Thread(target=run_schedule)
     scheduler_thread.start()
     
     app.run_server(debug=True, host='127.0.0.1', port=8050)
